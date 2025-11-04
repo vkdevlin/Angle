@@ -1,0 +1,53 @@
+name: Build ANGLE for Windows x64
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch ANGLE
+        shell: bash
+        run: |
+          mkdir angle && cd angle
+          fetch angle
+          gclient sync --nohooks --no-history --shallow --jobs 2
+
+      - name: Run hooks
+        shell: bash
+        run: |
+          cd angle
+          gclient runhooks
+
+      - name: Generate project files
+        shell: bash
+        run: |
+          cd angle
+          gn gen out/Win64Rel --args="is_debug=false is_component_build=false angle_enable_d3d11=true target_cpu=\"x64\""
+
+      - name: Build ANGLE (Release)
+        shell: bash
+        run: |
+          cd angle
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Upload ANGLE binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64-release
+          path: |
+            angle/out/Win64Rel/libEGL.dll
+            angle/out/Win64Rel/libGLESv2.dll
+            angle/out/Win64Rel/libEGL.lib
+            angle/out/Win64Rel/libGLESv2.lib
+            angle/include/**

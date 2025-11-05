@@ -63,7 +63,7 @@ jobs:
         shell: pwsh
         run: |
           Set-Location $env:GITHUB_WORKSPACE
-          if (Test-Path angle -and -not (Test-Path angle/.gclient)) {
+          if ((Test-Path angle) -and -not (Test-Path angle/.gclient)) {
             Write-Host "Partial checkout detected; removing 'angle'..."
             Remove-Item -Recurse -Force angle
           }

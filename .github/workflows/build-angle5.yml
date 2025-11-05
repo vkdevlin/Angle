@@ -1,0 +1,56 @@
+name: Build ANGLE 5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install depot_tools and add to PATH
+        shell: pwsh
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          git config --global depot-tools.allowGlobalGitConfig false
+
+      - name: Fetch ANGLE
+        shell: pwsh
+        run: |
+          if (Test-Path angle) { Write-Host "angle/ exists, skipping fetch"; }
+          else { fetch angle }
+
+      - name: Sync + Runhooks
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gclient sync -D
+          gclient runhooks
+
+      - name: GN generate (Win x64, D3D11 backend)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false angle_enable_d3d11=true'
+
+      - name: Build ANGLE DLLs
+        shell: pwsh
+        working-directory: angle
+        run: |
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Upload artifacts (DLLs + headers)
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64
+          path: |
+            angle/out/Win64Rel/*.dll
+            angle/include/**
+

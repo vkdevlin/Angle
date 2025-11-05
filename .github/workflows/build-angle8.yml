@@ -1,0 +1,102 @@
+name: Build ANGLE 8
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-angle:
+    runs-on: windows-latest
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"   # use GitHub-hosted VS toolchain
+
+    steps:
+      - name: Checkout (empty repo contents are fine)
+        uses: actions/checkout@v4
+
+      - name: Prepare workspace
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $work = Join-Path $env:GITHUB_WORKSPACE 'work'
+          if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+          New-Item -ItemType Directory -Path $work | Out-Null
+          Set-Location $work
+
+      - name: Fetch depot_tools
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'work')
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          $env:PATH = "$(Resolve-Path .\depot_tools);$env:PATH"
+          git config --global depot-tools.allowGlobalGitConfig false
+
+      - name: Configure gclient (solution name = angle -> folder angle/)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'work')
+          $env:PATH = "$(Resolve-Path .\depot_tools);$env:PATH"
+          gclient config --spec @'
+solutions = [
+  {
+    "name": "angle",
+    "url": "https://chromium.googlesource.com/angle/angle.git",
+    "deps_file": "DEPS",
+    "managed": True,
+    "custom_vars": {},
+  },
+]
+'@
+
+      - name: Sync ANGLE (fetch source + deps)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'work')
+          $env:PATH = "$(Resolve-Path .\depot_tools);$env:PATH"
+          gclient sync -D --nohooks
+          gclient runhooks
+
+      - name: Generate GN files (Win x64, static components off)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'work\angle')
+          $env:PATH = "$(Resolve-Path ..\depot_tools);$env:PATH"
+          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
+
+      - name: Build libEGL & libGLESv2
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          Set-Location (Join-Path $env:GITHUB_WORKSPACE 'work\angle')
+          $env:PATH = "$(Resolve-Path ..\depot_tools);$env:PATH"
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $root = Join-Path $env:GITHUB_WORKSPACE 'work\angle\out\Win64Rel'
+          $out  = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
+          if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+          New-Item -ItemType Directory -Path $out | Out-Null
+
+          Copy-Item "$root\libEGL.dll"      -Destination $out
+          Copy-Item "$root\libGLESv2.dll"   -Destination $out
+          # import libs for MSVC link
+          Copy-Item "$root\libEGL.lib"      -Destination $out -ErrorAction SilentlyContinue
+          Copy-Item "$root\libGLESv2.lib"   -Destination $out -ErrorAction SilentlyContinue
+
+          # Optional headers (grab from repo checkout)
+          $hdrSrc = Join-Path $env:GITHUB_WORKSPACE 'work\angle\include'
+          if (Test-Path $hdrSrc) {
+            Copy-Item $hdrSrc -Destination (Join-Path $out 'include') -Recurse
+          }
+
+      - name: Upload ANGLE artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64-rel
+          path: artifacts

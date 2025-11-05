@@ -9,110 +9,68 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout (this repo)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configure environment
         shell: pwsh
         run: |
-          # Use locally installed Visual Studio toolchain on the runner
-          $env:DEPOT_TOOLS_WIN_TOOLCHAIN = "0"
+          # Use the runner's installed Visual Studio toolchain
           "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          # Create a stable work directory
+          # Stable work directory
           $work = Join-Path $env:GITHUB_WORKSPACE 'work'
           if (-not (Test-Path $work)) { New-Item -ItemType Directory -Path $work | Out-Null }
           "WORK_DIR=$work" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Install depot_tools (if missing) and add to PATH
+      - name: Install depot_tools and add to PATH
         shell: pwsh
         run: |
-          $ws    = $env:GITHUB_WORKSPACE
-          $depot = Join-Path $ws 'depot_tools'
+          $depot = Join-Path $env:GITHUB_WORKSPACE 'depot_tools'
           if (-not (Test-Path $depot)) {
             git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $depot
           }
           $depot | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Fetch or reuse ANGLE checkout
+      - name: Fetch or reuse ANGLE
         shell: pwsh
         working-directory: ${{ env.WORK_DIR }}
         run: |
-          function Invoke-WithRetry {
-            param([string]$Cmd, [int]$Max=5, [int]$Delay=20)
-            for ($i=1; $i -le $Max; $i++) {
-              Write-Host "Attempt $i/$Max: $Cmd"
-              cmd /c $Cmd
-              if ($LASTEXITCODE -eq 0) { return 0 }
-              Start-Sleep -Seconds $Delay
-            }
-            throw "Command failed after $Max attempts: $Cmd"
+          if (-not (Test-Path angle)) {
+            fetch angle
           }
-
-          $angle = Join-Path (Get-Location) 'angle'
-          if (Test-Path "$angle\.gclient") {
-            Write-Host "Found existing ANGLE checkout: $angle"
-          } elseif (Test-Path $angle) {
-            Write-Host "ANGLE dir exists without .gclient (likely partial). Proceeding to fetch into it."
-          } else {
-            Write-Host "Fresh fetch of ANGLE..."
-            Invoke-WithRetry 'fetch angle'
+          Set-Location angle
+          # If fetch was skipped, make sure .gclient exists; if not, configure explicitly
+          if (-not (Test-Path ".gclient")) {
+            gclient config https://chromium.googlesource.com/angle/angle.git
           }
-
-          if (-not (Test-Path "$angle\.gclient")) {
-            # If fetch didn't lay down .gclient (rare), configure explicitly
-            Set-Location $angle
-            Invoke-WithRetry 'gclient config https://chromium.googlesource.com/angle/angle.git'
-          } else {
-            Set-Location $angle
-          }
-
-          # Robust sync + hooks
-          Invoke-WithRetry 'gclient sync -D'
-          Invoke-WithRetry 'gclient runhooks'
+          gclient sync -D
+          gclient runhooks
 
       - name: Generate build files (GN)
         shell: pwsh
         working-directory: ${{ env.WORK_DIR }}\angle
         run: |
-          # Ensure GN runs at the ANGLE source root (where .gn lives)
-          if (-not (Test-Path ".gn")) {
-            throw "Cannot find .gn in $(Get-Location). Wrong working directory."
-          }
+          if (-not (Test-Path ".gn")) { throw "Missing .gn at ANGLE root." }
           gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
-          if ($LASTEXITCODE -ne 0) { throw "gn gen failed" }
 
-      - name: Build ANGLE (autoninja)
+      - name: Build ANGLE
         shell: pwsh
         working-directory: ${{ env.WORK_DIR }}\angle
         run: |
           autoninja -C out/Win64Rel libEGL libGLESv2
-          if ($LASTEXITCODE -ne 0) { throw "autoninja failed" }
 
-      - name: Package headers and binaries
+      - name: Package artifact
         shell: pwsh
         working-directory: ${{ env.WORK_DIR }}\angle
         run: |
           $dest = Join-Path $env:GITHUB_WORKSPACE 'artifact'
           New-Item -ItemType Directory -Force -Path "$dest\include" | Out-Null
           New-Item -ItemType Directory -Force -Path "$dest\lib"     | Out-Null
-
-          # Public headers
-          Copy-Item -Recurse -Force ".\include\*" "$dest\include\"
-
-          # Binaries & import libs
-          Copy-Item -Force ".\out\Win64Rel\libEGL.dll"     "$dest\lib\"
-          Copy-Item -Force ".\out\Win64Rel\libGLESv2.dll"  "$dest\lib\"
+          Copy-Item -Recurse -Force ".\include\*"                   "$dest\include\"
+          Copy-Item -Force ".\out\Win64Rel\libEGL.dll"              "$dest\lib\"
+          Copy-Item -Force ".\out\Win64Rel\libGLESv2.dll"           "$dest\lib\"
           Get-ChildItem ".\out\Win64Rel" -Filter "*.lib" | Copy-Item -Destination "$dest\lib\" -Force
-
-          # Manifest
-          @"
-ANGLE build artifact
-Date (UTC): $(Get-Date -Format u)
-Runner:     $env:RUNNER_OS $env:RUNNER_ARCH
-Binaries:   libEGL.dll, libGLESv2.dll (+ *.lib)
-Headers:    include/
-"@ | Out-File "$dest\MANIFEST.txt" -Encoding ASCII
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

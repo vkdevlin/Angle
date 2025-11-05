@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 180
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -19,9 +20,13 @@ jobs:
       - name: Fetch ANGLE
         shell: bash
         run: |
+          set -e
           mkdir angle && cd angle
           fetch angle
-          gclient sync --nohooks --no-history --shallow --jobs 2
+          # retry gclient sync up to 3 times if network flakes
+          for i in 1 2 3; do
+            gclient sync --nohooks --no-history --shallow --jobs 2 && break || sleep 20
+          done
 
       - name: Run hooks
         shell: bash
@@ -29,25 +34,33 @@ jobs:
           cd angle
           gclient runhooks
 
-      - name: Generate project files
+      - name: Generate (Release x64)
         shell: bash
         run: |
           cd angle
           gn gen out/Win64Rel --args="is_debug=false is_component_build=false angle_enable_d3d11=true target_cpu=\"x64\""
 
-      - name: Build ANGLE (Release)
+      - name: Build (Release)
         shell: bash
         run: |
           cd angle
           autoninja -C out/Win64Rel libEGL libGLESv2
 
+      - name: Package artifact (zip)
+        shell: bash
+        run: |
+          cd angle
+          mkdir -p out/pkg/include
+          # copy headers and bins/libs
+          cp -R include/* out/pkg/include/
+          cp out/Win64Rel/libEGL.dll out/pkg/
+          cp out/Win64Rel/libGLESv2.dll out/pkg/
+          cp out/Win64Rel/libEGL.lib out/pkg/
+          cp out/Win64Rel/libGLESv2.lib out/pkg/
+          cd out && tar -a -c -f angle-win64-release.zip pkg
+
       - name: Upload ANGLE binaries
         uses: actions/upload-artifact@v4
         with:
           name: angle-win64-release
-          path: |
-            angle/out/Win64Rel/libEGL.dll
-            angle/out/Win64Rel/libGLESv2.dll
-            angle/out/Win64Rel/libEGL.lib
-            angle/out/Win64Rel/libGLESv2.lib
-            angle/include/**
+          path: angle/out/angle-win64-release.zip

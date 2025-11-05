@@ -1,0 +1,82 @@
+name: Build ANGLE 7
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install depot_tools and add to PATH
+        shell: pwsh
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          git config --global depot-tools.allowGlobalGitConfig false
+
+      - name: Scrub any stale gclient state (workspace and parents)
+        shell: pwsh
+        run: |
+          function Remove-IfExists($p) { if (Test-Path $p) { Remove-Item -Force -Recurse $p } }
+          $ws = $env:GITHUB_WORKSPACE
+          $par1 = (Get-Item $ws).Parent.FullName
+          $par2 = (Get-Item $par1).Parent.FullName  # usually D:\a
+          foreach ($d in @($ws, $par1, $par2)) {
+            Remove-IfExists (Join-Path $d ".gclient")
+            Remove-IfExists (Join-Path $d ".gclient_entries")
+            Remove-IfExists (Join-Path $d ".cipd_client")
+            Remove-IfExists (Join-Path $d ".cipd")
+            Remove-IfExists (Join-Path $d "angle")
+            Remove-IfExists (Join-Path $d "work")
+          }
+          # Avoid env-based override
+          Remove-Item Env:\GCLIENT_FILE -ErrorAction SilentlyContinue
+
+      - name: Create clean work dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+
+      - name: Configure gclient (no fetch)
+        shell: pwsh
+        working-directory: work
+        run: |
+          # Point gclient at ANGLE repo explicitly; this writes .gclient here
+          gclient config https://chromium.googlesource.com/angle/angle.git
+
+      - name: Sync ANGLE (with deps)
+        shell: pwsh
+        working-directory: work
+        run: |
+          $tries=0
+          while ($true) {
+            try { gclient sync -D --nohooks; break } catch { $tries++; if ($tries -ge 3) { throw } Start-Sleep -Seconds 20 }
+          }
+          gclient runhooks
+
+      - name: Generate GN files (Win x64, D3D11 path; Vulkan off)
+        shell: pwsh
+        working-directory: work\angle
+        run: |
+          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false angle_enable_d3d11=true'
+
+      - name: Build ANGLE (libEGL + libGLESv2)
+        shell: pwsh
+        working-directory: work\angle
+        run: |
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Upload artifacts (DLLs + headers)
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64
+          path: |
+            work/angle/out/Win64Rel/*.dll
+            work/angle/out/Win64Rel/*.pdb
+            work/angle/include/**

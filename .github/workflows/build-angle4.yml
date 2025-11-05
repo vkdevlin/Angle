@@ -1,0 +1,65 @@
+name: Build ANGLE 4
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"   # use runner’s preinstalled VS toolchain
+      GCLIENT_PY3: "1"
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Get depot_tools
+        shell: pwsh
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $Env:GITHUB_WORKSPACE\depot_tools
+          echo "$Env:GITHUB_WORKSPACE\depot_tools" >> $Env:GITHUB_PATH
+
+      - name: Fresh ANGLE dir
+        shell: pwsh
+        run: |
+          if (Test-Path angle) { Remove-Item -Recurse -Force angle }
+          mkdir angle | Out-Null
+          cd angle
+          gclient config --name "angle" https://chromium.googlesource.com/angle/angle.git
+
+      - name: Sync ANGLE (shallow)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gclient sync -D --nohooks --no-history --shallow --jobs 8
+          gclient runhooks
+
+      - name: Generate build files (GN)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
+
+      - name: Build (autoninja)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Package artifacts
+        shell: pwsh
+        working-directory: angle
+        run: |
+          New-Item -ItemType Directory -Force -Path $Env:GITHUB_WORKSPACE\angle_artifacts | Out-Null
+          Copy-Item out\Win64Rel\libEGL.dll        $Env:GITHUB_WORKSPACE\angle_artifacts\
+          Copy-Item out\Win64Rel\libGLESv2.dll     $Env:GITHUB_WORKSPACE\angle_artifacts\
+          Copy-Item -Recurse include               $Env:GITHUB_WORKSPACE\angle_artifacts\include
+          Compress-Archive -Path $Env:GITHUB_WORKSPACE\angle_artifacts\* -DestinationPath $Env:GITHUB_WORKSPACE\angle_win_x64.zip -Force
+
+      - name: Upload ANGLE zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win-x64
+          path: angle_win_x64.zip

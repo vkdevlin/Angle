@@ -1,0 +1,66 @@
+name: Build ANGLE 6
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install depot_tools and add to PATH
+        shell: pwsh
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          git config --global depot-tools.allowGlobalGitConfig false
+
+      - name: Reset workspace (remove stale gclient/partial checkouts)
+        shell: pwsh
+        run: |
+          if (Test-Path .gclient)          { Remove-Item -Force .gclient }
+          if (Test-Path .gclient_entries)  { Remove-Item -Force .gclient_entries }
+          if (Test-Path .cipd_client)      { Remove-Item -Recurse -Force .cipd_client }
+          if (Test-Path .cipd)             { Remove-Item -Recurse -Force .cipd }
+          if (Test-Path angle)             { Remove-Item -Recurse -Force angle }
+
+      - name: Fetch ANGLE (with simple retry)
+        shell: pwsh
+        run: |
+          $tries=0
+          while ($true) {
+            try { fetch angle; break } catch { $tries++; if ($tries -ge 3) { throw } Start-Sleep -Seconds 20 }
+          }
+
+      - name: Sync + Runhooks
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gclient sync -D
+          gclient runhooks
+
+      - name: GN generate (Win x64, D3D11 backend)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false angle_enable_d3d11=true'
+
+      - name: Build ANGLE DLLs
+        shell: pwsh
+        working-directory: angle
+        run: |
+          autoninja -C out/Win64Rel libEGL libGLESv2
+
+      - name: Upload artifacts (DLLs + headers)
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64
+          path: |
+            angle/out/Win64Rel/*.dll
+            angle/include/**

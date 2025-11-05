@@ -1,4 +1,4 @@
-name: Build ANGLE 7
+name: Build ANGLE 7.1
 
 on:
   workflow_dispatch:

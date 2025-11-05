@@ -1,0 +1,84 @@
+name: Build ANGLE 2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-win-x64:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+      GYP_MSVS_VERSION: 2022
+      VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\2022\Enterprise
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Enable long paths
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Define retry helper
+        shell: pwsh
+        run: |
+          $script = @"
+          param([string]$Cmd, [int]$Max=5, [int]$Delay=15)
+          for ($i=1; $i -le $Max; $i++) {
+            Write-Host "Retry attempt $i of $Max: $Cmd"
+            try {
+              & cmd /c $Cmd
+              if ($LASTEXITCODE -eq 0) { return 0 }
+            } catch { }
+            Start-Sleep -Seconds $Delay
+          }
+          Write-Error "Command failed after $Max attempts: $Cmd"
+          exit 1
+          "@
+          $script | Out-File -FilePath "$env:GITHUB_WORKSPACE\retry.ps1" -Encoding ASCII
+
+      - name: Get depot_tools
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\retry.ps1" 'git clone https://chromium.googlesource.com/chromium/tools/depot_tools depot_tools'
+          echo "$env:GITHUB_WORKSPACE\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+
+      - name: Fetch ANGLE
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\retry.ps1" 'fetch angle'
+          cd angle
+          & "$env:GITHUB_WORKSPACE\retry.ps1" 'gclient sync -D'
+          # Very important: regenerate GN files against local VS toolchain
+          & "$env:GITHUB_WORKSPACE\retry.ps1" 'gclient runhooks'
+
+      - name: Generate build files (GN)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\angle
+        run: >
+          gn gen out\Win64Rel
+          --args="is_debug=false target_cpu=\"x64\" is_component_build=false
+          angle_enable_d3d9=false angle_enable_vulkan=false"
+
+      - name: Build (autoninja)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\angle
+        run: |
+          & "$env:GITHUB_WORKSPACE\retry.ps1" 'autoninja -C out\Win64Rel libEGL libGLESv2'
+
+      - name: Stage headers + libs
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\angle
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:GITHUB_WORKSPACE\dist\include | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:GITHUB_WORKSPACE\dist\lib     | Out-Null
+          robocopy include $env:GITHUB_WORKSPACE\dist\include /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+          Copy-Item out\Win64Rel\libEGL.dll    $env:GITHUB_WORKSPACE\dist\lib\
+          Copy-Item out\Win64Rel\libGLESv2.dll $env:GITHUB_WORKSPACE\dist\lib\
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64
+          path: dist

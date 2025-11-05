@@ -1,4 +1,4 @@
-name: Build ANGLE for Windows x64 (robust)
+name: Build ANGLE 1
 
 on:
   workflow_dispatch: {}

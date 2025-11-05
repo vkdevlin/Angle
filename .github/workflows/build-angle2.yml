@@ -23,19 +23,33 @@ jobs:
       - name: Define retry helper
         shell: pwsh
         run: |
-          $script = @"
-          param([string]$Cmd, [int]$Max=5, [int]$Delay=15)
-          for ($i=1; $i -le $Max; $i++) {
-            Write-Host "Retry attempt $i of $Max: $Cmd"
-            try {
-              & cmd /c $Cmd
-              if ($LASTEXITCODE -eq 0) { return 0 }
-            } catch { }
-            Start-Sleep -Seconds $Delay
+          $script = @'
+          param(
+            [string] $Cmd,
+            [int]    $Max   = 5,
+            [int]    $Delay = 15
+          )
+
+          for ($i = 1; $i -le $Max; $i++) {
+            Write-Host "Retry attempt ${i} of ${Max}: ${Cmd}"
+
+            # Run command via cmd.exe to preserve Windows quoting semantics
+            & cmd /c "$Cmd"
+            $code = $LASTEXITCODE
+
+            if ($code -eq 0) {
+              exit 0
+            }
+
+            if ($i -lt $Max) {
+              Start-Sleep -Seconds $Delay
+            }
           }
-          Write-Error "Command failed after $Max attempts: $Cmd"
+
+          Write-Error "Command failed after ${Max} attempts: ${Cmd}"
           exit 1
-          "@
+          '@
+
           $script | Out-File -FilePath "$env:GITHUB_WORKSPACE\retry.ps1" -Encoding ASCII
 
       - name: Get depot_tools

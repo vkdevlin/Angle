@@ -1,111 +1,68 @@
-name: ANGLE Fetch and Sync
+name: angle-fetch
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # run manually from the Actions tab
 
 jobs:
-  fetch_sync:
-    name: Fetch ANGLE source + DEPS
+  fetch:
     runs-on: windows-latest
-    timeout-minutes: 90
-
-    env:
-      # Keep depot_tools from trying to manage VS toolchains (we aren't building here).
-      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+    timeout-minutes: 180
 
     steps:
-      - name: Prepare workspace
+      - name: Checkout (empty)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Prepare clean workspace
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
-          $ErrorActionPreference = "Stop"
+          $wd = Join-Path $env:GITHUB_WORKSPACE 'work'
+          if (Test-Path $wd) { Remove-Item -Recurse -Force $wd }
+          New-Item -ItemType Directory -Path $wd | Out-Null
+          "WORKDIR=$wd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          # Start clean each run
-          if (Test-Path angle) { Remove-Item -Recurse -Force angle }
-          if (Test-Path depot_tools) { Remove-Item -Recurse -Force depot_tools }
-          New-Item -ItemType Directory -Force -Path angle | Out-Null
-
-      - name: Clone depot_tools (with basic retry)
+      - name: Fetch depot_tools
         shell: pwsh
+        working-directory: ${{ env.WORKDIR }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $tries = 0
-          while ($true) {
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          "$PWD\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure gclient (unmanaged, explicit name)
+        shell: pwsh
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          gclient --version
+          gclient config --unmanaged --name angle https://chromium.googlesource.com/angle/angle.git
+
+      - name: Sync ANGLE (with simple retry)
+        shell: pwsh
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          $retries = 4
+          for ($i=1; $i -le $retries; $i++) {
+            Write-Host "gclient sync attempt $i of $retries"
             try {
-              git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git depot_tools
-              break
-            } catch {
-              $tries++
-              if ($tries -ge 5) { throw "depot_tools clone failed repeatedly" }
-              Start-Sleep -Seconds 15
-            }
+              gclient sync -D
+              if ($LASTEXITCODE -eq 0) { break }
+            } catch { }
+            if ($i -eq $retries) { throw "gclient sync failed after $retries attempts" }
+            Start-Sleep -Seconds (30 * $i)
           }
 
-      - name: Put depot_tools on PATH
+      - name: Zip angle/ tree
         shell: pwsh
+        working-directory: ${{ env.WORKDIR }}
         run: |
-          $p = (Resolve-Path depot_tools).Path
-          echo "$p" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ASCII
+          Compress-Archive -Path .\angle -DestinationPath angle-src.zip -Force
+          Get-ChildItem angle-src.zip | Format-Table Name,Length
 
-      - name: Configure Git (quiet, local)
-        shell: pwsh
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.filemode false
-          git config --global core.fscache true
-          git config --global core.preloadindex true
-          git config --global depot-tools.allowGlobalGitConfig false
-
-      - name: gclient config (ANGLE)
-        shell: pwsh
-        working-directory: angle
-        run: |
-          $spec = @"
-solutions = [
-  {
-    "name": ".",
-    "url": "https://chromium.googlesource.com/angle/angle.git",
-    "deps_file": "DEPS",
-    "managed": False,
-    "custom_vars": {},
-  },
-]
-"@
-          # Write a .gclient file explicitly, then also call gclient config for good measure
-          Set-Content -Path ".gclient" -Value $spec -Encoding ASCII
-          gclient config --spec "$spec"
-
-      - name: gclient sync (source only)
-        shell: pwsh
-        working-directory: angle
-        run: |
-          $ErrorActionPreference = "Stop"
-          $tries = 0
-          while ($true) {
-            try {
-              # -D = delete stale; --nohooks = do NOT run hooks; --with_branch_heads to grab tags cleanly
-              gclient sync -D --nohooks --with_branch_heads --verbose
-              break
-            } catch {
-              $tries++
-              if ($tries -ge 5) { throw "gclient sync failed repeatedly" }
-              Start-Sleep -Seconds 30
-            }
-          }
-
-      - name: Prune large caches we don't need (shave artifact size)
-        shell: pwsh
-        working-directory: angle
-        run: |
-          # Keep the checked out tree minimal for artifacts
-          if (Test-Path ".git") { Remove-Item -Recurse -Force ".git" }
-          # Any CIPD caches or vpython bits in third_party/depot_tools pulled by sync? Be conservative:
-          if (Test-Path "third_party\depot_tools\.cipd_bin") { Remove-Item -Recurse -Force "third_party\depot_tools\.cipd_bin" -ErrorAction SilentlyContinue }
-
-      - name: Archive ANGLE tree
+      - name: Upload artifact (ANGLE source)
         uses: actions/upload-artifact@v4
         with:
-          name: angle-tree
-          path: angle
+          name: angle-src
+          path: ${{ env.WORKDIR }}\angle-src.zip
           if-no-files-found: error
           retention-days: 7

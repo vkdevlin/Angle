@@ -14,22 +14,23 @@ jobs:
         with:
           fetch-depth: 1
 
+
       - name: Define retry helper
         shell: pwsh
         run: |
-          $fn = @"
+          $fn = @'
           param([string]$Cmd,[int]$Max=5,[int]$Delay=20)
           for ($i=1; $i -le $Max; $i++) {
-            Write-Host "Retry $i/$Max: $Cmd"
+            Write-Host ("Retry {0}/{1}: {2}" -f $i,$Max,$Cmd)
             try {
               cmd /c $Cmd
-              if ($LASTEXITCODE -eq 0) { return 0 }
+              if ($LASTEXITCODE -eq 0) { exit 0 }
             } catch { }
             Start-Sleep -Seconds $Delay
           }
-          Write-Error "Failed after $Max attempts: $Cmd"
+          Write-Error ("Failed after {0} attempts: {1}" -f $Max,$Cmd)
           exit 1
-          "@
+          '@
           $fn | Out-File -FilePath "$env:GITHUB_WORKSPACE\retry.ps1" -Encoding ASCII
 
       - name: Prepare workspace

@@ -7,33 +7,54 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 360
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"   # use preinstalled VS on the runner
 
     steps:
-      - name: Checkout (repo contents don’t matter for ANGLE build)
+      - name: Checkout (repo contents don’t matter)
         uses: actions/checkout@v4
 
-      - name: Enable long paths
+      - name: Enable long paths (git)
         shell: pwsh
         run: git config --global core.longpaths true
+
+      - name: Add MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Fetch depot_tools
         shell: pwsh
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git depot_tools
-          echo "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+          "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
 
       - name: Prepare workspace and configure gclient
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force work | Out-Null
           Set-Location work
-          gclient config https://chromium.googlesource.com/angle/angle.git
-          # retry gclient sync a few times to survive flakes
-          $ok=$false; for($i=1; $i -le 5 -and -not $ok; $i++){
+          $spec = @"
+          solutions = [
+            {
+              "name": "angle",
+              "url": "https://chromium.googlesource.com/angle/angle.git",
+              "deps_file": "DEPS",
+              "managed": false,
+            },
+          ]
+          "@
+          gclient config --spec "$spec"
+
+          # retry sync a few times to ride out flakes
+          $ok = $false
+          for ($i=1; $i -le 5 -and -not $ok; $i++) {
+            Write-Host "gclient sync attempt $i/5"
             gclient sync -D --jobs 16
-            if ($LASTEXITCODE -eq 0) { $ok=$true } else { Start-Sleep -Seconds 30 }
+            if ($LASTEXITCODE -eq 0) { $ok = $true } else { Start-Sleep -Seconds 45 }
           }
           if (-not $ok) { throw "gclient sync failed repeatedly" }
+
           gclient runhooks
 
       - name: Generate GN files

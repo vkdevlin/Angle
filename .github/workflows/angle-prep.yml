@@ -1,0 +1,67 @@
+name: angle-prep
+on:
+  workflow_dispatch:
+
+jobs:
+  prep:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Start
+        run: |
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+
+      - name: Download angle-src.tgz artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: angle-src.tgz
+          path: work
+
+      - name: Normalize artifact file name
+        run: |
+          Set-Location "$env:GITHUB_WORKSPACE\work"
+          # Find the tgz no matter how v4 saved it (file or nested folder)
+          $tgz = Get-ChildItem -Recurse -File -Filter "angle-src.tgz" | Select-Object -First 1
+          if (-not $tgz) { throw "angle-src.tgz not found in downloaded artifact." }
+          if ($tgz.DirectoryName -ne (Get-Location).Path) {
+            Copy-Item -Force $tgz.FullName ".\angle-src.tgz"
+          }
+          if (-not (Test-Path ".\angle-src.tgz")) { throw "Failed to place angle-src.tgz in work/." }
+          Write-Host "angle-src.tgz size: $((Get-Item .\angle-src.tgz).Length) bytes"
+
+      - name: Extract source
+        run: |
+          Set-Location "$env:GITHUB_WORKSPACE\work"
+          tar -xzf ".\angle-src.tgz"
+          # Find ANGLE root by locating the .gn file
+          $gn = Get-ChildItem -Recurse -File -Filter ".gn" | Select-Object -First 1
+          if (-not $gn) { throw "Could not find .gn after extraction." }
+          $angleRoot = Split-Path -Parent $gn.FullName
+          Write-Host "ANGLE root: $angleRoot"
+          # Persist for later steps
+          "ANGLE_ROOT=$angleRoot" | Out-File -FilePath "$env:GITHUB_WORKSPACE\work\angle-root.txt" -Encoding ASCII
+
+      - name: Sanity checks
+        run: |
+          $angleRoot = (Get-Content "$env:GITHUB_WORKSPACE\work\angle-root.txt" | Select-String "^ANGLE_ROOT=").ToString().Split('=')[1]
+          Write-Host "Checking $angleRoot"
+          $mustExist = @(".gn","build","src","third_party")
+          foreach ($m in $mustExist) {
+            $p = Join-Path $angleRoot $m
+            if (-not (Test-Path $p)) { throw "Missing required path: $p" }
+          }
+          # Quick size/signals
+          Write-Host "third_party entries:" (Get-ChildItem -LiteralPath (Join-Path $angleRoot "third_party") | Measure-Object).Count
+          Write-Host "Disk usage snapshot under work/:"
+          Get-ChildItem "$env:GITHUB_WORKSPACE\work" -Recurse | Measure-Object -Property Length -Sum
+
+      - name: Upload angle-root marker
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-root
+          path: work/angle-root.txt
+          compression-level: 0

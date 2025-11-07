@@ -78,18 +78,22 @@ jobs:
           }
           git -C angle rev-parse --short HEAD
 
-      - name: Zip angle/ tree
-        shell: pwsh
-        working-directory: ${{ env.WORKDIR }}
+      # Package ANGLE sources with tar (robust to symlinks)
+      - name: Package ANGLE sources
+        shell: bash
         run: |
-          if (Test-Path angle-src.zip) { Remove-Item -Force angle-src.zip }
-          Compress-Archive -Path .\angle -DestinationPath angle-src.zip -Force
-          Get-ChildItem angle-src.zip | Format-Table Name,Length
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/work"
+          rm -f angle-src.tgz
+          tar -czf angle-src.tgz angle
+          ls -lh angle-src.tgz
 
-      - name: Upload artifact (ANGLE source)
+      # Upload the tarball as the job artifact
+      - name: Upload ANGLE src artifact
         uses: actions/upload-artifact@v4
         with:
-          name: angle-src
-          path: ${{ env.WORKDIR }}\angle-src.zip
+          name: angle-src.tgz
+          path: work/angle-src.tgz
           if-no-files-found: error
           retention-days: 7
+

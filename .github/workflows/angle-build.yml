@@ -1,0 +1,138 @@
+name: angle-build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-angle:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout (empty)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Define retry helper
+        shell: pwsh
+        run: |
+          $fn = @"
+          param([string]$Cmd,[int]$Max=5,[int]$Delay=20)
+          for ($i=1; $i -le $Max; $i++) {
+            Write-Host "Retry $i/$Max: $Cmd"
+            try {
+              cmd /c $Cmd
+              if ($LASTEXITCODE -eq 0) { return 0 }
+            } catch { }
+            Start-Sleep -Seconds $Delay
+          }
+          Write-Error "Failed after $Max attempts: $Cmd"
+          exit 1
+          "@
+          $fn | Out-File -FilePath "$env:GITHUB_WORKSPACE\retry.ps1" -Encoding ASCII
+
+      - name: Prepare workspace
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          if (Test-Path work) { Remove-Item -Recurse -Force work }
+          New-Item -ItemType Directory -Path work | Out-Null
+
+      # Try to find and download the newest artifact named "angle-src"
+      - name: Try download latest artifact "angle-src"
+        id: fetch_art
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          $api = "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100"
+          $resp = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; "X-GitHub-Api-Version"="2022-11-28" }
+          if (-not $resp -or -not $resp.artifacts) { throw "No artifacts listed." }
+          $art = $resp.artifacts | Where-Object { $_.name -eq "angle-src" -and $_.expired -eq $false } | Sort-Object -Property created_at -Descending | Select-Object -First 1
+          if (-not $art) { throw "Artifact 'angle-src' not found." }
+          $zipPath = Join-Path $env:GITHUB_WORKSPACE "work\angle-src.zip"
+          Write-Host "Downloading artifact id=$($art.id) -> $zipPath"
+          Invoke-WebRequest -Uri $art.archive_download_url -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } -OutFile $zipPath
+          Write-Host "Downloaded."
+
+      # Fallback: use local file if present (e.g., you committed angle-src.tgz)
+      - name: Place angle-src.tgz
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work
+          if (Test-Path "$env:GITHUB_WORKSPACE\work\angle-src.zip") {
+            Write-Host "Unzipping downloaded artifact"
+            tar -xf "$env:GITHUB_WORKSPACE\work\angle-src.zip"
+          } elseif (Test-Path "$env:GITHUB_WORKSPACE\angle-src.tgz") {
+            Copy-Item "$env:GITHUB_WORKSPACE\angle-src.tgz" .
+          } else {
+            throw "No artifact and no local angle-src.tgz found."
+          }
+          if (-not (Test-Path "angle-src.tgz")) {
+            throw "angle-src.tgz missing after unzip/copy."
+          }
+
+      - name: Unpack angle-src.tgz
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work
+          if (Test-Path angle) { Remove-Item -Recurse -Force angle }
+          New-Item -ItemType Directory -Path angle | Out-Null
+          tar -xzf angle-src.tgz -C angle
+          # sanity: look for DEPS and depot_tools
+          if (-not (Test-Path "angle\DEPS")) { throw "DEPS not found under work\angle" }
+          if (-not (Test-Path "angle\third_party\depot_tools")) { throw "depot_tools not found under work\angle\third_party" }
+
+      - name: Print VS installation path
+        shell: pwsh
+        run: |
+          $vs = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($vs)) { throw "No VS with C++ toolset found on runner." }
+          Write-Host "VS found at: $vs"
+
+      - name: Configure environment (force local toolchain & local depot_tools)
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work\angle
+          $env:DEPOT_TOOLS_WIN_TOOLCHAIN = "0"
+          $env:DEPOT_TOOLS_UPDATE = "0"
+          $env:PATH = "$pwd\third_party\depot_tools;$env:PATH"
+          where gn
+          where autoninja
+          python --version
+
+      - name: Run hooks (no DEPS sync)
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work\angle
+          & "$env:GITHUB_WORKSPACE\retry.ps1" "gclient runhooks"
+
+      - name: Generate Ninja files (Win64Rel)
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work\angle
+          $args = 'is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
+          & "$env:GITHUB_WORKSPACE\retry.ps1" "gn gen out/Win64Rel --args='$args'"
+
+      - name: Build ANGLE (libEGL, libGLESv2)
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE\work\angle
+          & "$env:GITHUB_WORKSPACE\retry.ps1" "autoninja -C out/Win64Rel libEGL libGLESv2"
+          Get-ChildItem out\Win64Rel | Select-Object Name,Length | Format-Table
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-win64-libs
+          path: |
+            work/angle/out/Win64Rel/libEGL.dll
+            work/angle/out/Win64Rel/libEGL.lib
+            work/angle/out/Win64Rel/libEGL.pdb
+            work/angle/out/Win64Rel/libGLESv2.dll
+            work/angle/out/Win64Rel/libGLESv2.lib
+            work/angle/out/Win64Rel/libGLESv2.pdb
+          if-no-files-found: warn

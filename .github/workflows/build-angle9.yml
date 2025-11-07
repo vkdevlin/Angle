@@ -1,52 +1,55 @@
 name: Build ANGLE 9
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 360
     env:
-      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"   # use preinstalled VS on the runner
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"   # use the runner's preinstalled VS toolchain
 
     steps:
-      - name: Checkout (repo contents don’t matter)
+      - name: Checkout (repo content irrelevant)
         uses: actions/checkout@v4
 
-      - name: Enable long paths (git)
-        shell: pwsh
-        run: git config --global core.longpaths true
-
-      - name: Add MSVC build environment
+      - name: Enable MSVC environment (x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Fetch depot_tools
+      - name: Basic git settings (avoid path issues)
         shell: pwsh
         run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git depot_tools
-          "$pwd\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
+          git config --global core.filemode false
 
-      - name: Prepare workspace and configure gclient
+      - name: Get depot_tools and add to PATH
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force work | Out-Null
-          Set-Location work
-          $spec = @"
-          solutions = [
-            {
-              "name": "angle",
-              "url": "https://chromium.googlesource.com/angle/angle.git",
-              "deps_file": "DEPS",
-              "managed": false,
-            },
-          ]
-          "@
-          gclient config --spec "$spec"
+          Set-Location $env:RUNNER_TEMP
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          "$env:RUNNER_TEMP\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
 
-          # retry sync a few times to ride out flakes
+      - name: Fetch ANGLE into a clean temp dir (with retries)
+        shell: pwsh
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          if (Test-Path angle) { Remove-Item -Recurse -Force angle }
+          $ok = $false
+          for ($i=1; $i -le 5 -and -not $ok; $i++) {
+            Write-Host "fetch angle attempt $i/5"
+            cmd /c "fetch angle"
+            if ($LASTEXITCODE -eq 0) { $ok = $true } else { Start-Sleep -Seconds 45 }
+          }
+          if (-not $ok) { throw "fetch angle failed repeatedly" }
+
+      - name: Sync DEPS (with retries) and runhooks
+        shell: pwsh
+        working-directory: ${{ runner.temp }}\angle
+        run: |
           $ok = $false
           for ($i=1; $i -le 5 -and -not $ok; $i++) {
             Write-Host "gclient sync attempt $i/5"
@@ -54,27 +57,26 @@ jobs:
             if ($LASTEXITCODE -eq 0) { $ok = $true } else { Start-Sleep -Seconds 45 }
           }
           if (-not $ok) { throw "gclient sync failed repeatedly" }
-
           gclient runhooks
 
       - name: Generate GN files
         shell: pwsh
-        working-directory: work/angle
+        working-directory: ${{ runner.temp }}\angle
         run: |
-          gn gen out/Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
+          gn gen out\Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
 
       - name: Build ANGLE (libEGL, libGLESv2)
         shell: pwsh
-        working-directory: work/angle
+        working-directory: ${{ runner.temp }}\angle
         run: |
-          autoninja -C out/Win64Rel libEGL libGLESv2
+          autoninja -C out\Win64Rel libEGL libGLESv2
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: angle-win64
           path: |
-            work/angle/out/Win64Rel/libEGL.dll
-            work/angle/out/Win64Rel/libGLESv2.dll
-            work/angle/out/Win64Rel/*.lib
-            work/angle/out/Win64Rel/*.pdb
+            ${{ runner.temp }}\angle\out\Win64Rel\libEGL.dll
+            ${{ runner.temp }}\angle\out\Win64Rel\libGLESv2.dll
+            ${{ runner.temp }}\angle\out\Win64Rel\*.lib
+            ${{ runner.temp }}\angle\out\Win64Rel\*.pdb

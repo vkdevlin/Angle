@@ -102,17 +102,17 @@ jobs:
           # If the .gclient file isn't present (depending on how the tgz was created),
           # create a trivial one that points to the current directory.
           if (-not (Test-Path ".gclient")) {
-            $spec = @'
+            $spec = @"
 solutions = [
   {
-    "name": ".",
-    "url": "https://chromium.googlesource.com/angle/angle.git",
-    "deps_file": "DEPS",
-    "managed": False,
-    "custom_vars": {},
+    \"name": \".\",
+    \"url": \"https://chromium.googlesource.com/angle/angle.git\",
+    \"deps_file": \"DEPS\",
+    \"managed": False,
+    \"custom_vars": {},
   },
 ]
-'@
+"@
             $spec | Out-File -FilePath ".gclient" -Encoding ASCII
           }
           # Run sync with retries

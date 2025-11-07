@@ -6,7 +6,10 @@ on:
 jobs:
   fetch:
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
+    env:
+      # Never try to download the VS toolchain from GCS.
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
 
     steps:
       - name: Checkout (empty)
@@ -19,7 +22,12 @@ jobs:
         run: |
           Set-StrictMode -Version Latest
           $wd = Join-Path $env:GITHUB_WORKSPACE 'work'
-          if (Test-Path $wd) { Remove-Item -Recurse -Force $wd }
+          if (Test-Path $wd) {
+            # Remove any leftovers from a previous attempt
+            Remove-Item -Recurse -Force $wd
+            # GitHub sometimes locks dirs briefly; wait a moment
+            Start-Sleep -Seconds 2
+          }
           New-Item -ItemType Directory -Path $wd | Out-Null
           "WORKDIR=$wd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -28,6 +36,7 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          # Put depot_tools on PATH for subsequent steps
           "$PWD\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Configure gclient (unmanaged, explicit name)
@@ -35,9 +44,10 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           gclient --version
+          # Create a .gclient that checks out ANGLE into ".\angle"
           gclient config --unmanaged --name angle https://chromium.googlesource.com/angle/angle.git
 
-      - name: Sync ANGLE (with simple retry)
+      - name: Sync ANGLE (no hooks; simple retry)
         shell: pwsh
         working-directory: ${{ env.WORKDIR }}
         run: |
@@ -45,17 +55,34 @@ jobs:
           for ($i=1; $i -le $retries; $i++) {
             Write-Host "gclient sync attempt $i of $retries"
             try {
-              gclient sync -D
+              # --nohooks avoids the VS toolchain download and any GCS access
+              # --with_branch_heads reduces chances of later fetch failures
+              gclient sync -D --nohooks --with_branch_heads
               if ($LASTEXITCODE -eq 0) { break }
             } catch { }
-            if ($i -eq $retries) { throw "gclient sync failed after $retries attempts" }
-            Start-Sleep -Seconds (30 * $i)
+            if ($i -lt $retries) {
+              $delay = 30 * $i
+              Write-Host "Retrying in $delay seconds..."
+              Start-Sleep -Seconds $delay
+            } else {
+              throw "gclient sync failed after $retries attempts"
+            }
           }
+
+      - name: Verify checkout
+        shell: pwsh
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          if (-not (Test-Path angle\.git)) {
+            throw "ANGLE checkout missing (angle/.git not found)."
+          }
+          git -C angle rev-parse --short HEAD
 
       - name: Zip angle/ tree
         shell: pwsh
         working-directory: ${{ env.WORKDIR }}
         run: |
+          if (Test-Path angle-src.zip) { Remove-Item -Force angle-src.zip }
           Compress-Archive -Path .\angle -DestinationPath angle-src.zip -Force
           Get-ChildItem angle-src.zip | Format-Table Name,Length
 

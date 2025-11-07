@@ -59,21 +59,30 @@ jobs:
           Invoke-WebRequest -Uri $art.archive_download_url -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } -OutFile $zipPath
           Write-Host "Downloaded."
 
-      # Fallback: use local file if present (e.g., you committed angle-src.tgz)
       - name: Place angle-src.tgz
         shell: pwsh
         run: |
           Set-Location $env:GITHUB_WORKSPACE\work
-          if (Test-Path "$env:GITHUB_WORKSPACE\work\angle-src.zip") {
-            Write-Host "Unzipping downloaded artifact"
-            tar -xf "$env:GITHUB_WORKSPACE\work\angle-src.zip"
-          } elseif (Test-Path "$env:GITHUB_WORKSPACE\angle-src.tgz") {
-            Copy-Item "$env:GITHUB_WORKSPACE\angle-src.tgz" .
-          } else {
-            throw "No artifact and no local angle-src.tgz found."
+
+          # CASE 1 — artifact was downloaded
+          if (Test-Path "$env:GITHUB_WORKSPACE\work\angle-src.tgz.zip") {
+            Write-Host "Found angle-src.tgz.zip — unzipping"
+            tar -xf "$env:GITHUB_WORKSPACE\work\angle-src.tgz.zip"
           }
+
+          # CASE 2 — fallback: user manually committed angle-src.tgz
+          elseif (Test-Path "$env:GITHUB_WORKSPACE\angle-src.tgz") {
+            Write-Host "Using manually committed angle-src.tgz"
+            Copy-Item "$env:GITHUB_WORKSPACE\angle-src.tgz" .
+          }
+
+          else {
+            throw "Neither angle-src.tgz.zip nor angle-src.tgz found."
+          }
+
+          # Final sanity check
           if (-not (Test-Path "angle-src.tgz")) {
-            throw "angle-src.tgz missing after unzip/copy."
+            throw "angle-src.tgz missing after extraction/copy."
           }
 
       - name: Unpack angle-src.tgz

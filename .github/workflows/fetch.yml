@@ -1,0 +1,111 @@
+name: ANGLE - Step 1 (Fetch+Sync)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch_sync:
+    name: Fetch ANGLE source + DEPS
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      # Keep depot_tools from trying to manage VS toolchains (we aren't building here).
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+
+    steps:
+      - name: Prepare workspace
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+
+          # Start clean each run
+          if (Test-Path angle) { Remove-Item -Recurse -Force angle }
+          if (Test-Path depot_tools) { Remove-Item -Recurse -Force depot_tools }
+          New-Item -ItemType Directory -Force -Path angle | Out-Null
+
+      - name: Clone depot_tools (with basic retry)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tries = 0
+          while ($true) {
+            try {
+              git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git depot_tools
+              break
+            } catch {
+              $tries++
+              if ($tries -ge 5) { throw "depot_tools clone failed repeatedly" }
+              Start-Sleep -Seconds 15
+            }
+          }
+
+      - name: Put depot_tools on PATH
+        shell: pwsh
+        run: |
+          $p = (Resolve-Path depot_tools).Path
+          echo "$p" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ASCII
+
+      - name: Configure Git (quiet, local)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.filemode false
+          git config --global core.fscache true
+          git config --global core.preloadindex true
+          git config --global depot-tools.allowGlobalGitConfig false
+
+      - name: gclient config (ANGLE)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          $spec = @"
+solutions = [
+  {
+    "name": ".",
+    "url": "https://chromium.googlesource.com/angle/angle.git",
+    "deps_file": "DEPS",
+    "managed": False,
+    "custom_vars": {},
+  },
+]
+"@
+          # Write a .gclient file explicitly, then also call gclient config for good measure
+          Set-Content -Path ".gclient" -Value $spec -Encoding ASCII
+          gclient config --spec "$spec"
+
+      - name: gclient sync (source only)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tries = 0
+          while ($true) {
+            try {
+              # -D = delete stale; --nohooks = do NOT run hooks; --with_branch_heads to grab tags cleanly
+              gclient sync -D --nohooks --with_branch_heads --verbose
+              break
+            } catch {
+              $tries++
+              if ($tries -ge 5) { throw "gclient sync failed repeatedly" }
+              Start-Sleep -Seconds 30
+            }
+          }
+
+      - name: Prune large caches we don't need (shave artifact size)
+        shell: pwsh
+        working-directory: angle
+        run: |
+          # Keep the checked out tree minimal for artifacts
+          if (Test-Path ".git") { Remove-Item -Recurse -Force ".git" }
+          # Any CIPD caches or vpython bits in third_party/depot_tools pulled by sync? Be conservative:
+          if (Test-Path "third_party\depot_tools\.cipd_bin") { Remove-Item -Recurse -Force "third_party\depot_tools\.cipd_bin" -ErrorAction SilentlyContinue }
+
+      - name: Archive ANGLE tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-tree
+          path: angle
+          if-no-files-found: error
+          retention-days: 7

@@ -1,4 +1,4 @@
-iname: angle-prep (download prior artifact)
+name: angle-prep (download prior artifact)
 
 on:
   workflow_dispatch: {}   # manual only

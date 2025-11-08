@@ -1,0 +1,117 @@
+name: angle-build
+
+on:
+  workflow_dispatch: {}   # manual only
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    env:
+      # Hardcode the producing run + artifact from your successful fetch job.
+      REPO: vkdevlin/Angle
+      RUN_ID: '19175891700'
+      ARTIFACT_NAME: 'angle-src.tgz'
+
+      # Use the VS toolchain preinstalled on the GitHub Windows runner.
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+
+    steps:
+      - name: Show context
+        shell: pwsh
+        run: |
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Repo:      $env:REPO"
+          Write-Host "Run ID:    $env:RUN_ID"
+          Write-Host "Artifact:  $env:ARTIFACT_NAME"
+
+      - name: Make work dir
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+
+      - name: Download artifact (REST API)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $headers = @{
+            "Authorization" = "Bearer $env:GH_TOKEN"
+            "Accept"        = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+            # GitHub API requires a UA string
+            "User-Agent"    = "gh-actions/angle-build"
+          }
+
+          $listUri = "https://api.github.com/repos/$env:REPO/actions/runs/$env:RUN_ID/artifacts?per_page=100"
+          $resp = Invoke-RestMethod -Headers $headers -Uri $listUri -Method GET
+          if (-not $resp -or -not $resp.artifacts) { throw "No artifacts listed for run $env:RUN_ID." }
+
+          $match = $resp.artifacts | Where-Object { $_.name -eq $env:ARTIFACT_NAME }
+          if (-not $match) { throw "Artifact '$env:ARTIFACT_NAME' not found in run $env:RUN_ID." }
+
+          $zipUri = "https://api.github.com/repos/$env:REPO/actions/artifacts/$($match.id)/zip"
+          $zipOut = "$env:GITHUB_WORKSPACE\work\artifact.zip"
+          Invoke-WebRequest -Headers $headers -Uri $zipUri -OutFile $zipOut
+
+          $unz = "$env:GITHUB_WORKSPACE\work\unz"
+          Expand-Archive -Path $zipOut -DestinationPath $unz -Force
+
+          $tgz = Get-ChildItem -Path $unz -Recurse -Filter *.tgz | Select-Object -First 1
+          if (-not $tgz) { throw "Downloaded archive contained no .tgz payload." }
+
+          $dst = "$env:GITHUB_WORKSPACE\work\angle-src.tgz"
+          Move-Item -Force $tgz.FullName $dst
+          if (-not (Test-Path $dst)) { throw "Failed to place angle-src.tgz at $dst" }
+
+          Write-Host "Downloaded and verified: $dst"
+
+      - name: Unpack angle-src.tgz
+        shell: pwsh
+        run: |
+          $tgz = "$env:GITHUB_WORKSPACE\work\angle-src.tgz"
+          if (-not (Test-Path $tgz)) { throw "Missing tgz: $tgz" }
+          tar -xf $tgz -C "$env:GITHUB_WORKSPACE\work"
+          # Expect a top-level 'angle' dir inside the tgz
+          $angleRoot = Join-Path "$env:GITHUB_WORKSPACE\work" 'angle'
+          if (-not (Test-Path $angleRoot)) { throw "Expected 'angle' directory after extract." }
+          Write-Host "ANGLE_ROOT=$angleRoot"
+          "ANGLE_ROOT=$angleRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Add depot_tools to PATH
+        shell: pwsh
+        run: |
+          $depot = Join-Path $env:ANGLE_ROOT 'depot_tools'
+          if (-not (Test-Path $depot)) { throw "depot_tools not found at $depot" }
+          $env:PATH = "$depot;$env:PATH"
+          "PATH=$depot;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          gclient --version
+
+      - name: Run hooks (use local VS toolchain)
+        shell: pwsh
+        working-directory: ${{ env.ANGLE_ROOT }}
+        run: |
+          # With DEPOT_TOOLS_WIN_TOOLCHAIN=0 this uses the runner's installed VS.
+          gclient runhooks
+
+      - name: Generate GN files (Win64 Release)
+        shell: pwsh
+        working-directory: ${{ env.ANGLE_ROOT }}
+        run: |
+          gn gen out\Win64Rel --args='is_debug=false is_component_build=false target_cpu="x64" angle_enable_vulkan=false'
+
+      - name: Build ANGLE (libEGL, libGLESv2)
+        shell: pwsh
+        working-directory: ${{ env.ANGLE_ROOT }}
+        run: |
+          autoninja -C out\Win64Rel libEGL libGLESv2
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-windows-x64-binaries
+          path: |
+            ${{ env.ANGLE_ROOT }}\out\Win64Rel\*.dll
+            ${{ env.ANGLE_ROOT }}\out\Win64Rel\*.lib
+          if-no-files-found: error

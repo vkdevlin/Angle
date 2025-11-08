@@ -1,70 +1,50 @@
 name: angle-prep
+
 on:
   workflow_dispatch:
     inputs:
       run_id:
         description: "Run ID that produced the artifact (e.g., 19175891700)"
         required: true
+        type: string
       artifact_name:
-        description: "Exact artifact name (e.g., angle-src.tgz)"
+        description: "Exact artifact name (case-sensitive)"
         required: true
+        default: angle-src.tgz
+        type: string
+
+permissions:
+  actions: read      # <-- REQUIRED to read artifacts from another run
+  contents: read
 
 jobs:
   prep:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
 
     steps:
       - name: Show workspace and inputs
+        shell: pwsh
         run: |
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
-          Write-Host "Run ID:     ${{ inputs.run_id }}"
-          Write-Host "Artifact:   ${{ inputs.artifact_name }}"
-          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+          Write-Host "Run ID:  ${{ inputs.run_id }}"
+          Write-Host "Artifact: ${{ inputs.artifact_name }}"
 
-      - name: Download artifact from specified run
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.artifact_name }}
-          path: work
-          run-id: ${{ inputs.run_id }}
-          # Optional: set if downloading from a different repo than this one
-          # repository: owner/repo
-
-      - name: Locate artifact file (lenient)
+      - name: Download artifact via gh CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
         run: |
-          Set-Location "$env:GITHUB_WORKSPACE\work"
-          $name = '${{ inputs.artifact_name }}'
-          # Try exact name first
-          $file = Get-ChildItem -File -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $file) {
-            # Fallback: maybe the action created a nested folder or zip wrapper
-            $file = Get-ChildItem -Recurse -File -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
-          }
-          if (-not $file) {
-            throw "Artifact '$name' not found after download."
-          }
-          if ($file.DirectoryName -ne (Get-Location).Path) {
-            Copy-Item -Force $file.FullName ".\$($file.Name)"
-            $file = Get-Item ".\$($file.Name)"
-          }
-          Write-Host "Found artifact file: $($file.FullName)"
-          Write-Host "Size (bytes): $($file.Length)"
+          mkdir work | Out-Null
+          gh run download ${{ inputs.run_id }} --name "${{ inputs.artifact_name }}" --dir work
 
-      - name: Compute SHA-256 for verification
+      - name: Verify file exists
+        shell: pwsh
         run: |
-          Set-Location "$env:GITHUB_WORKSPACE\work"
-          $name = '${{ inputs.artifact_name }}'
-          $hash = Get-FileHash -Algorithm SHA256 -Path ".\${name}"
-          Write-Host "SHA256 $($hash.Hash)  $name"
-          # Save a small proof file for future steps
-          "ANGLE_ARTIFACT_FILE=$name`nSHA256=$($hash.Hash)" | Out-File -FilePath angle-proof.txt -Encoding ASCII
+          $p = Join-Path $env:GITHUB_WORKSPACE "work\${{ inputs.artifact_name }}"
+          if (-not (Test-Path $p)) { throw "Artifact file not found at $p" }
+          Get-ChildItem $p | Format-List Name, Length, FullName
 
-      - name: Upload proof
-        uses: actions/upload-artifact@v4
-        with:
-          name: angle-prep-proof
-          path: work/angle-proof.txt
-          compression-level: 0
+      - name: List work dir
+        shell: pwsh
+        run: |
+          Get-ChildItem -Force work | Format-Table -Auto

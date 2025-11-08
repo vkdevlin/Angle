@@ -82,11 +82,13 @@ jobs:
       - name: Add depot_tools to PATH
         shell: pwsh
         run: |
-          $depot = Join-Path $env:ANGLE_ROOT 'depot_tools'
-          if (-not (Test-Path $depot)) { throw "depot_tools not found at $depot" }
-          $env:PATH = "$depot;$env:PATH"
-          "PATH=$depot;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
-          gclient --version
+          $depot = Join-Path $env:ANGLE_ROOT 'third_party\depot_tools'
+          if (-not (Test-Path $depot)) {
+            Write-Host "ANGLE_ROOT contents:"; Get-ChildItem -Name $env:ANGLE_ROOT
+            throw "third_party\depot_tools not found at $depot"
+          }
+          # Put depot_tools first so gn/ninja are the ones from ANGLE’s pinned toolchain
+          "$depot" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
 
       - name: Run hooks (use local VS toolchain)
         shell: pwsh

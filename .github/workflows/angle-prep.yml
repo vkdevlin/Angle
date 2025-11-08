@@ -1,71 +1,39 @@
 name: angle-prep
-
 on:
-  workflow_dispatch:
-    inputs:
-      run_id:
-        description: "Run ID that produced the artifact (e.g., 19175891700)"
-        required: true
-        type: string
-      artifact_name:
-        description: "Exact artifact name (e.g., angle-src.tgz)"
-        required: true
-        type: string
-
-permissions:
-  contents: read   # needed for gh to read artifacts
+  workflow_dispatch: {}   # manual only
 
 jobs:
   prep:
     runs-on: windows-latest
-
+    env:
+      ANGLE_RUN_ID: "19175891700"   # hardcoded run ID
+      ANGLE_ARTIFACT: "angle-src.tgz"  # hardcoded artifact name
     steps:
-      - name: Show workspace and inputs
-        shell: pwsh
-        run: |
-          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
-          Write-Host "Run ID:    ${{ inputs.run_id }}"
-          Write-Host "Artifact:  ${{ inputs.artifact_name }}"
-
-      # gh needs a repo checkout to know which repository to query
-      - name: Checkout (for gh context)
+      - name: Checkout (for repo context)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Authenticate gh
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $env:GH_TOKEN = $env:GITHUB_TOKEN
-          gh --version
-          gh auth status || ( Write-Host "Logging into gh" ; echo $env:GH_TOKEN | gh auth login --with-token )
-
-      - name: Download artifact via gh CLI
+      - name: Show workspace and inputs
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path work | Out-Null
-          # Download the artifact contents from the specified run
-          gh run download ${{ inputs.run_id }} -n "${{ inputs.artifact_name }}" -D work
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Run ID: $env:ANGLE_RUN_ID"
+          Write-Host "Artifact: $env:ANGLE_ARTIFACT"
 
-          # gh normally extracts the zip; if a .zip appears, expand it
-          $zip = Join-Path "work" ("${{ inputs.artifact_name }}" + ".zip")
-          if (Test-Path $zip) {
-            Write-Host "Expanding downloaded ZIP: $zip"
-            Expand-Archive -Path $zip -DestinationPath work -Force
+      - name: Download artifact from specified run
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ANGLE_ARTIFACT }}
+          path: work
+          run-id: ${{ env.ANGLE_RUN_ID }}
+          repository: ${{ github.repository }}
+
+      - name: Verify and list
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "work\${env:ANGLE_ARTIFACT}")) {
+            throw "Artifact not found at work\${env:ANGLE_ARTIFACT}"
           }
-
-          # Verify expected file is present (angle-src.tgz)
-          $expect = Join-Path "work" "${{ inputs.artifact_name }}"
-          if (-not (Test-Path $expect)) {
-            Write-Host "Contents under work/:"
-            Get-ChildItem -Recurse work
-            throw "Artifact content '${{ inputs.artifact_name }}' not found in work/."
-          }
-
-      - name: List results
-        shell: pwsh
-        run: |
           Write-Host "Downloaded files:"
-          Get-ChildItem -Recurse work | Select-Object Mode,Length,LastWriteTime,FullName | Format-Table -AutoSize
+          Get-ChildItem -Recurse work | ForEach-Object { $_.FullName }

@@ -40,7 +40,7 @@ jobs:
         run: |
           $env:GH_TOKEN = $env:GITHUB_TOKEN
           gh --version
-          gh auth status || ( Write-Host "Logging into gh…" ; echo $env:GH_TOKEN | gh auth login --with-token )
+          gh auth status || ( Write-Host "Logging into gh" ; echo $env:GH_TOKEN | gh auth login --with-token )
 
       - name: Download artifact via gh CLI
         shell: pwsh

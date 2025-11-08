@@ -1,48 +1,59 @@
-name: angle-prep (download prior artifact)
+name: angle-prep
 
 on:
-  workflow_dispatch: {}   # manual only
-
-permissions:
-  contents: read
-  actions: read
+  workflow_dispatch:  # manual only; will NOT run on push
 
 jobs:
   prep:
     runs-on: windows-latest
+
     env:
-      RUN_ID: '19175891700'          # <- your successful fetch run id
-      ARTIFACT_NAME: 'angle-src.tgz' # <- exact artifact name shown in Actions UI
+      RUN_ID: "19175891700"          # hardcoded as requested
+      ARTIFACT_NAME: "angle-src.tgz" # must match exactly
 
     steps:
-      - name: Show workspace and inputs
+      - name: Show workspace and constants
         shell: pwsh
         run: |
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Repo:      $env:GITHUB_REPOSITORY"
           Write-Host "Run ID:    $env:RUN_ID"
           Write-Host "Artifact:  $env:ARTIFACT_NAME"
 
+      - name: Ensure work dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+
+      # GitHub’s runner provides GH CLI and a GITHUB_TOKEN.
+      # We pipe the token via PowerShell (no bash <<< here).
       - name: Authenticate gh
         shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh --version
-          gh auth status 2>$null
+          gh auth status 2>$null | Out-Null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Logging into gh with GITHUB_TOKEN…"
-            $env:GITHUB_TOKEN | gh auth login --with-token
+            $env:GH_TOKEN | gh auth login --with-token
           }
-          gh auth status
 
       - name: Download artifact from specified run
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
-          gh run download --repo "$env:GITHUB_REPOSITORY" --run-id "$env:RUN_ID" -n "$env:ARTIFACT_NAME" -D "$env:GITHUB_WORKSPACE\work"
-          if (-not (Test-Path "$env:GITHUB_WORKSPACE\work\$env:ARTIFACT_NAME")) {
+          # Use --repo so gh doesn't require a local .git
+          gh run download $env:RUN_ID `
+            --repo "$env:GITHUB_REPOSITORY" `
+            -n "$env:ARTIFACT_NAME" `
+            -D "$env:GITHUB_WORKSPACE\work"
+
+          # Verify the file is present
+          $path = Join-Path "$env:GITHUB_WORKSPACE\work" "$env:ARTIFACT_NAME"
+          if (-not (Test-Path $path)) {
             throw "Download did not produce $env:ARTIFACT_NAME in work\"
           }
-          $f = Get-Item "$env:GITHUB_WORKSPACE\work\$env:ARTIFACT_NAME"
-          Write-Host "Downloaded: $($f.FullName)"
-          Write-Host ("Size (bytes): {0}" -f $f.Length)
+
+      - name: List downloaded contents
+        shell: pwsh
+        run: |
+          Get-ChildItem -Force "$env:GITHUB_WORKSPACE\work" | Format-List

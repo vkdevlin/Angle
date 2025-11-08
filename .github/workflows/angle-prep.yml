@@ -1,6 +1,13 @@
 name: angle-prep
 on:
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID that produced the artifact (e.g., 19175891700)"
+        required: true
+      artifact_name:
+        description: "Exact artifact name (e.g., angle-src.tgz)"
+        required: true
 
 jobs:
   prep:
@@ -10,58 +17,54 @@ jobs:
         shell: pwsh
 
     steps:
-      - name: Start
+      - name: Show workspace and inputs
         run: |
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Run ID:     ${{ inputs.run_id }}"
+          Write-Host "Artifact:   ${{ inputs.artifact_name }}"
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
 
-      - name: Download angle-src.tgz artifact
+      - name: Download artifact from specified run
         uses: actions/download-artifact@v4
         with:
-          name: angle-src.tgz
+          name: ${{ inputs.artifact_name }}
           path: work
+          run-id: ${{ inputs.run_id }}
+          # Optional: set if downloading from a different repo than this one
+          # repository: owner/repo
 
-      - name: Normalize artifact file name
+      - name: Locate artifact file (lenient)
         run: |
           Set-Location "$env:GITHUB_WORKSPACE\work"
-          # Find the tgz no matter how v4 saved it (file or nested folder)
-          $tgz = Get-ChildItem -Recurse -File -Filter "angle-src.tgz" | Select-Object -First 1
-          if (-not $tgz) { throw "angle-src.tgz not found in downloaded artifact." }
-          if ($tgz.DirectoryName -ne (Get-Location).Path) {
-            Copy-Item -Force $tgz.FullName ".\angle-src.tgz"
+          $name = '${{ inputs.artifact_name }}'
+          # Try exact name first
+          $file = Get-ChildItem -File -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $file) {
+            # Fallback: maybe the action created a nested folder or zip wrapper
+            $file = Get-ChildItem -Recurse -File -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
           }
-          if (-not (Test-Path ".\angle-src.tgz")) { throw "Failed to place angle-src.tgz in work/." }
-          Write-Host "angle-src.tgz size: $((Get-Item .\angle-src.tgz).Length) bytes"
+          if (-not $file) {
+            throw "Artifact '$name' not found after download."
+          }
+          if ($file.DirectoryName -ne (Get-Location).Path) {
+            Copy-Item -Force $file.FullName ".\$($file.Name)"
+            $file = Get-Item ".\$($file.Name)"
+          }
+          Write-Host "Found artifact file: $($file.FullName)"
+          Write-Host "Size (bytes): $($file.Length)"
 
-      - name: Extract source
+      - name: Compute SHA-256 for verification
         run: |
           Set-Location "$env:GITHUB_WORKSPACE\work"
-          tar -xzf ".\angle-src.tgz"
-          # Find ANGLE root by locating the .gn file
-          $gn = Get-ChildItem -Recurse -File -Filter ".gn" | Select-Object -First 1
-          if (-not $gn) { throw "Could not find .gn after extraction." }
-          $angleRoot = Split-Path -Parent $gn.FullName
-          Write-Host "ANGLE root: $angleRoot"
-          # Persist for later steps
-          "ANGLE_ROOT=$angleRoot" | Out-File -FilePath "$env:GITHUB_WORKSPACE\work\angle-root.txt" -Encoding ASCII
+          $name = '${{ inputs.artifact_name }}'
+          $hash = Get-FileHash -Algorithm SHA256 -Path ".\${name}"
+          Write-Host "SHA256 $($hash.Hash)  $name"
+          # Save a small proof file for future steps
+          "ANGLE_ARTIFACT_FILE=$name`nSHA256=$($hash.Hash)" | Out-File -FilePath angle-proof.txt -Encoding ASCII
 
-      - name: Sanity checks
-        run: |
-          $angleRoot = (Get-Content "$env:GITHUB_WORKSPACE\work\angle-root.txt" | Select-String "^ANGLE_ROOT=").ToString().Split('=')[1]
-          Write-Host "Checking $angleRoot"
-          $mustExist = @(".gn","build","src","third_party")
-          foreach ($m in $mustExist) {
-            $p = Join-Path $angleRoot $m
-            if (-not (Test-Path $p)) { throw "Missing required path: $p" }
-          }
-          # Quick size/signals
-          Write-Host "third_party entries:" (Get-ChildItem -LiteralPath (Join-Path $angleRoot "third_party") | Measure-Object).Count
-          Write-Host "Disk usage snapshot under work/:"
-          Get-ChildItem "$env:GITHUB_WORKSPACE\work" -Recurse | Measure-Object -Property Length -Sum
-
-      - name: Upload angle-root marker
+      - name: Upload proof
         uses: actions/upload-artifact@v4
         with:
-          name: angle-root
-          path: work/angle-root.txt
+          name: angle-prep-proof
+          path: work/angle-proof.txt
           compression-level: 0

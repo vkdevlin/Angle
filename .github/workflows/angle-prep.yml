@@ -1,39 +1,45 @@
 name: angle-prep
+
 on:
-  workflow_dispatch: {}   # manual only
+  workflow_dispatch:
 
 jobs:
   prep:
     runs-on: windows-latest
-    env:
-      ANGLE_RUN_ID: "19175891700"   # hardcoded run ID
-      ANGLE_ARTIFACT: "angle-src.tgz"  # hardcoded artifact name
-    steps:
-      - name: Checkout (for repo context)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Show workspace and inputs
+    steps:
+      - name: Checkout (required so workspace exists)
+        uses: actions/checkout@v4
+
+      - name: Show workspace
         shell: pwsh
         run: |
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
-          Write-Host "Run ID: $env:ANGLE_RUN_ID"
-          Write-Host "Artifact: $env:ANGLE_ARTIFACT"
 
-      - name: Download artifact from specified run
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.ANGLE_ARTIFACT }}
-          path: work
-          run-id: ${{ env.ANGLE_RUN_ID }}
-          repository: ${{ github.repository }}
+      # GH CLI login (correct PowerShell syntax)
+      - name: Authenticate gh
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh auth status 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Logging into GH CLI…"
+            gh auth login --with-token <<< "$env:GH_TOKEN"
+          }
+          gh auth status
 
-      - name: Verify and list
+      # Hardcoded run ID + artifact name
+      - name: Download angle-src.tgz from run 19175891700
         shell: pwsh
         run: |
-          if (-not (Test-Path "work\${env:ANGLE_ARTIFACT}")) {
-            throw "Artifact not found at work\${env:ANGLE_ARTIFACT}"
+          gh run download 19175891700 --name "angle-src.tgz" --dir "$env:GITHUB_WORKSPACE\work"
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\work\angle-src.tgz")) {
+            throw "Artifact angle-src.tgz not found after download"
           }
-          Write-Host "Downloaded files:"
-          Get-ChildItem -Recurse work | ForEach-Object { $_.FullName }
+          Write-Host "Artifact successfully downloaded:"
+          Get-ChildItem "$env:GITHUB_WORKSPACE\work"

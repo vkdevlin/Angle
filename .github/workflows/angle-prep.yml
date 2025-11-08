@@ -1,45 +1,48 @@
-name: angle-prep
+iname: angle-prep (download prior artifact)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}   # manual only
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   prep:
     runs-on: windows-latest
+    env:
+      RUN_ID: '19175891700'          # <- your successful fetch run id
+      ARTIFACT_NAME: 'angle-src.tgz' # <- exact artifact name shown in Actions UI
 
     steps:
-      - name: Checkout (required so workspace exists)
-        uses: actions/checkout@v4
-
-      - name: Show workspace
+      - name: Show workspace and inputs
         shell: pwsh
         run: |
           Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Run ID:    $env:RUN_ID"
+          Write-Host "Artifact:  $env:ARTIFACT_NAME"
 
-      # GH CLI login (correct PowerShell syntax)
       - name: Authenticate gh
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh --version
           gh auth status 2>$null
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "Logging into GH CLI…"
-            gh auth login --with-token <<< "$env:GH_TOKEN"
+            Write-Host "Logging into gh with GITHUB_TOKEN…"
+            $env:GITHUB_TOKEN | gh auth login --with-token
           }
           gh auth status
 
-      # Hardcoded run ID + artifact name
-      - name: Download angle-src.tgz from run 19175891700
+      - name: Download artifact from specified run
         shell: pwsh
         run: |
-          gh run download 19175891700 --name "angle-src.tgz" --dir "$env:GITHUB_WORKSPACE\work"
-
-      - name: Verify artifact
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "$env:GITHUB_WORKSPACE\work\angle-src.tgz")) {
-            throw "Artifact angle-src.tgz not found after download"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
+          gh run download --repo "$env:GITHUB_REPOSITORY" --run-id "$env:RUN_ID" -n "$env:ARTIFACT_NAME" -D "$env:GITHUB_WORKSPACE\work"
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\work\$env:ARTIFACT_NAME")) {
+            throw "Download did not produce $env:ARTIFACT_NAME in work\"
           }
-          Write-Host "Artifact successfully downloaded:"
-          Get-ChildItem "$env:GITHUB_WORKSPACE\work"
+          $f = Get-Item "$env:GITHUB_WORKSPACE\work\$env:ARTIFACT_NAME"
+          Write-Host "Downloaded: $($f.FullName)"
+          Write-Host ("Size (bytes): {0}" -f $f.Length)

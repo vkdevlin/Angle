@@ -1,59 +1,63 @@
 name: angle-prep
 
 on:
-  workflow_dispatch:  # manual only; will NOT run on push
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   prep:
     runs-on: windows-latest
-
     env:
-      RUN_ID: "19175891700"          # hardcoded as requested
-      ARTIFACT_NAME: "angle-src.tgz" # must match exactly
+      REPO: vkdevlin/Angle
+      RUN_ID: 19175891700          # <-- your successful fetch run
+      ART_NAME: angle-src.tgz      # <-- exact artifact name to pull
 
     steps:
-      - name: Show workspace and constants
-        shell: pwsh
-        run: |
-          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
-          Write-Host "Repo:      $env:GITHUB_REPOSITORY"
-          Write-Host "Run ID:    $env:RUN_ID"
-          Write-Host "Artifact:  $env:ARTIFACT_NAME"
-
-      - name: Ensure work dir
+      - name: Make work dir
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\work" | Out-Null
 
-      # GitHub’s runner provides GH CLI and a GITHUB_TOKEN.
-      # We pipe the token via PowerShell (no bash <<< here).
-      - name: Authenticate gh
+      - name: Download artifact (REST API)
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh --version
-          gh auth status 2>$null | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Logging into gh with GITHUB_TOKEN…"
-            $env:GH_TOKEN | gh auth login --with-token
+          $headers = @{
+            Authorization          = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+            Accept                 = "application/vnd.github+json"
           }
 
-      - name: Download artifact from specified run
-        shell: pwsh
-        run: |
-          # Use --repo so gh doesn't require a local .git
-          gh run download $env:RUN_ID `
-            --repo "$env:GITHUB_REPOSITORY" `
-            -n "$env:ARTIFACT_NAME" `
-            -D "$env:GITHUB_WORKSPACE\work"
+          # 1) List artifacts on the target run
+          $listUrl = "https://api.github.com/repos/$env:REPO/actions/runs/$env:RUN_ID/artifacts?per_page=100"
+          $resp = Invoke-RestMethod -Headers $headers -Uri $listUrl -Method GET
 
-          # Verify the file is present
-          $path = Join-Path "$env:GITHUB_WORKSPACE\work" "$env:ARTIFACT_NAME"
-          if (-not (Test-Path $path)) {
-            throw "Download did not produce $env:ARTIFACT_NAME in work\"
+          if (-not $resp.artifacts) {
+            throw "No artifacts found on run $env:RUN_ID."
           }
 
-      - name: List downloaded contents
-        shell: pwsh
-        run: |
-          Get-ChildItem -Force "$env:GITHUB_WORKSPACE\work" | Format-List
+          $artifact = $resp.artifacts | Where-Object { $_.name -eq $env:ART_NAME } | Select-Object -First 1
+          if (-not $artifact) {
+            $found = ($resp.artifacts.name -join ', ')
+            throw "Artifact '$env:ART_NAME' not found on run $env:RUN_ID. Found: $found"
+          }
+
+          # 2) Download ZIP of that artifact id
+          $zipUrl  = "https://api.github.com/repos/$env:REPO/actions/artifacts/$($artifact.id)/zip"
+          $zipPath = Join-Path "$env:GITHUB_WORKSPACE\work" "$($env:ART_NAME).zip"
+          Invoke-WebRequest -Headers $headers -Uri $zipUrl -OutFile $zipPath
+
+          # 3) Extract ZIP and verify expected file exists
+          Expand-Archive -Path $zipPath -DestinationPath "$env:GITHUB_WORKSPACE\work" -Force
+          Remove-Item $zipPath -Force
+
+          $expected = Join-Path "$env:GITHUB_WORKSPACE\work" $env:ART_NAME
+          if (-not (Test-Path $expected)) {
+            throw "Download/extract succeeded but '$($env:ART_NAME)' not found in work/."
+          }
+
+          Write-Host "Downloaded and verified: $expected"
+          Get-ChildItem "$env:GITHUB_WORKSPACE\work" -Recurse | ForEach-Object { Write-Host $_.FullName }
